@@ -1,20 +1,22 @@
 <div id="top">
 
-<!-- HEADER STYLE: CLASSIC -->
 <div align="center">
 
-<img src="readmeai/assets/logos/purple.svg" width="30%" style="position: relative; top: 0; right: 0;" alt="Project Logo"/>
+<img src="img/header-img.png" width="30%" style="position: relative; top: 0; right: 0;" alt="Project Logo"/>
 
 # BLUETOOTH_CONNECTOR.GIT
 
 <em></em>
 
-<!-- BADGES -->
+<img src="https://img.shields.io/badge/C%2B%2B-00599C?style=default&logo=cplusplus&logoColor=white&color=0080ff" alt="language-c++">
+<img src="https://img.shields.io/badge/ESP32-E7352C?style=default&logo=espressif&logoColor=white&color=0080ff" alt="microcontroller-esp32">
 <img src="https://img.shields.io/github/license/RodrigofrBastos/bluetooth_connector.git?style=default&logo=opensourceinitiative&logoColor=white&color=0080ff" alt="license">
 <img src="https://img.shields.io/github/last-commit/RodrigofrBastos/bluetooth_connector.git?style=default&logo=git&logoColor=white&color=0080ff" alt="last-commit">
-<img src="https://img.shields.io/github/languages/top/RodrigofrBastos/bluetooth_connector.git?style=default&color=0080ff" alt="repo-top-language">
-<img src="https://img.shields.io/github/languages/count/RodrigofrBastos/bluetooth_connector.git?style=default&color=0080ff" alt="repo-language-count">
 
+</div>
+<br>
+
+---
 <!-- default option, no dependency badges. -->
 
 
