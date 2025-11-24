@@ -9,4 +9,4 @@ void setupSerialComms();
  * @brief Executa o ciclo de enviar e receber dados
  * Esta função deve ser chamada no loop principal.
  */
-void loopSerialComms();
+void loopSerialComms(bool verbose = false);

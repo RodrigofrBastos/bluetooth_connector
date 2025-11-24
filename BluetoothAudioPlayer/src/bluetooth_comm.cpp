@@ -1,12 +1,13 @@
 #include "bluetooth_comm.h" // Inclui o "menu"
 #include <Arduino.h>
 #include "BluetoothA2DPSource.h"
-#include "audio_data.h"       // Inclui os dados do áudio
+// #include "audio_data.h"       // Inclui os dados do áudio
+#include "test_data.h"       // Inclui os dados de teste
 
 // --- Variáveis Globais Privadas deste Módulo ---
 BluetoothA2DPSource a2dp_source;
 const char* NOME_DO_FONE = "QCY H3"; 
-volatile int posicao_audio = 0; 
+volatile int posicao_audio = 0;
 
 // --- Callbacks Internos (Não precisam estar no .h) ---
 
@@ -27,11 +28,11 @@ int32_t get_sound_data(Frame *data, int32_t len) {
     int frames_para_copiar = len;
     
     for (int i = 0; i < frames_para_copiar; i++) {
-        if (posicao_audio >= audio_teste_raw_len) { 
+        if (posicao_audio >= test_data_len) { 
             posicao_audio = 0; 
         }
 
-        uint8_t sample_8bit = audio_teste_raw[posicao_audio];
+        uint8_t sample_8bit = test_data[posicao_audio];
         int16_t sample_16bit = (sample_8bit - 128) * 256;
         
         data[i].channel1 = sample_16bit;
@@ -46,7 +47,7 @@ int32_t get_sound_data(Frame *data, int32_t len) {
 // --- Funções Públicas (Definidas no .h) ---
 
 void setupBluetooth() {
-  Serial.printf("Tamanho do áudio na memória: %d bytes\n", audio_teste_raw_len);
+  Serial.printf("Tamanho do áudio na memória: %d bytes\n", test_data_len);
   Serial.printf("Procurando dispositivo: %s\n", NOME_DO_FONE);
 
   // Configura o callback de status
@@ -69,10 +70,10 @@ void loopBluetooth() {
       
       if (a2dp_source.is_connected()) {
           // Calcula a porcentagem
-          int porcentagem = (posicao_audio * 100) / audio_teste_raw_len;
+          int porcentagem = (posicao_audio * 100) / test_data_len;
           
           Serial.printf("[Tocando] Progresso: %d%% (Byte %d de %d)\n", 
-                        porcentagem, posicao_audio, audio_teste_raw_len);
+                        porcentagem, posicao_audio, test_data_len);
           
           if (porcentagem < 2) { // Ajuste o 2% se o buffer for grande
               Serial.println(">>> Início da Faixa / Loop <<<");

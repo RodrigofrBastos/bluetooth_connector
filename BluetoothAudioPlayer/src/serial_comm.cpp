@@ -1,70 +1,99 @@
-
-#include "serial_comm.h"
 #include <Arduino.h>
+#include "serial_comm.h"
+#include "test_data.h"
 
-// --- Pinos para a UART2 (Hardware Serial 2) ---
-// Você pode mudar para quaisquer pinos livres
-#define RXD2 16 // Pino RX
-#define TXD2 17 // Pino TX
+// --- Pinos para a UART2 ---
+#define RXD2 16 
+#define TXD2 17 
 
-/**
- * @brief Função auxiliar para printar um byte no Monitor Serial
- * em formato binário (bits) com zeros à esquerda.
- * @param val O byte a ser printado.
- */
+// Mantemos a função auxiliar igual, pois ela calcula a paridade DE UM BYTE
+byte calculateEvenParity(byte val) {
+  byte count = 0;
+  for (int i = 0; i < 8; i++) {
+    count ^= bitRead(val, i);
+  }
+  return count;
+}
+
 void printByteAsBinary(byte val) {
-  // Itera por todos os 8 bits, do mais significativo (7) 
-  // ao menos significativo (0)
   for (int i = 7; i >= 0; i--) {
-    // bitRead() lê um bit específico de um byte
     Serial.print(bitRead(val, i));
   }
 }
 
-
 void setupSerialComms() {
-  // Inicia a Serial2 nos pinos definidos (RXD2, TXD2)
-  // 9600 é a taxa de baudrate (velocidade)
-  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2); 
-  
-  Serial.println("Comunicação Serial (Serial2) iniciada.");
-  Serial.println(">>> Conecte um jumper entre os pinos 16 e 17 para este teste <<<");
+  // Configuração: 8 bits de dados, Paridade Par (Even), 1 Stop Bit
+  Serial2.begin(115200, SERIAL_8E1, RXD2, TXD2);
+
+  Serial.println("--- UART Iniciada (8E1) ---");
+  Serial.println("Pinos: RX=16, TX=17");
   Serial.println();
 }
 
+void loopSerialComms(bool verbose) {
+  // 1. Enviar o ARRAY COMPLETO de uma vez via Hardware
+  // O hardware vai pegar byte por byte, calcular a paridade de cada um e enviar.
+  size_t bytes_sent = Serial2.write(test_data, test_data_len);
 
-void loopSerialComms() {
-  // Vamos definir a "sequência de bits" que queremos enviar.
-  // Em C++, 0b... define um número binário.
-  // Esta é uma sequência de 8 bits (1 byte).
-  byte byte_para_enviar = 0b10110010; // (Hex: 0xB2)
+  Serial.print(">>> Pacote enviado! Total de bytes escritos: ");
+  Serial.println(bytes_sent);
 
-  
-  // 1. Enviar a sequencia de bits via TX
-  Serial2.write(byte_para_enviar);
 
-  // 2. Printar a sequencia de bits no terminal (Monitor Serial)
-  Serial.print("Enviando via TX (Pino 17): ");
-  printByteAsBinary(byte_para_enviar);
-  Serial.println();
-
-  // 3. Esperar receber uma sequencia de bits vinda de RX
-  Serial.println("Aguardando dados de RX (Pino 16)...");
-
-  // O loop 'while' bloqueia o código até que a Serial2 
-  // (o pino RX) receba algum dado.
-  while (Serial2.available() == 0) {
-    delay(10); // Espera ativa
+  if (verbose) {
+      Serial.println("--- DETALHAMENTO DOS FRAMES ENVIADOS (Simulação Visual) ---");
+    
+      // 2. Loop para visualizar o que o Hardware fez com CADA byte
+      // A paridade é per-byte, então precisamos iterar o array de dados.
+      for (unsigned int i = 0; i < test_data_len; i++) {
+        byte currentByte = test_data[i];
+        byte parityBit = calculateEvenParity(currentByte);
+    
+        Serial.print("Byte [");
+        Serial.print(i);
+        Serial.print("]: ");
+        printByteAsBinary(currentByte);
+    
+        Serial.print(" | Paridade (E): ");
+        Serial.print(parityBit);
+    
+        // Visualização do Frame Físico
+        Serial.print("  -> Frame: [S:0] [");
+        printByteAsBinary(currentByte);
+        Serial.print("] [P:");
+        Serial.print(parityBit);
+        Serial.println("] [E:1]");
+      }
+      Serial.println("-----------------------------------------------------------");
   }
 
-  // Assim que houver dados, leia o byte que chegou
-  byte byte_recebido = Serial2.read();
-
-  // 4. Printar os bits recebidos de RX
-  Serial.print("Recebido de RX (Pino 16):   ");
-  printByteAsBinary(byte_recebido);
-  Serial.println();
-  Serial.println("---------------------------------");
+  // 3. Recebimento dos Dados (Loop para ler múltiplos bytes)
+  Serial.println("Aguardando chegada dos dados em RX...");
   
-  delay(3000); // Espera 3 segundos antes de repetir o processo
+  // Aguarda até que chegue pelo menos 1 byte
+  while (Serial2.available() == 0) {
+    delay(10);
+  }
+
+  // Pequeno delay para garantir que o buffer encha se os bytes estiverem chegando rápido
+  delay(100); 
+
+  Serial.println("--- DADOS RECEBIDOS EM RX ---");
+  int count_rx = 0;
+  
+  // Enquanto houver dados no buffer de recepção...
+  while (Serial2.available() > 0) {
+    byte byte_recebido = Serial2.read();
+    
+    Serial.print("RX Byte [");
+    Serial.print(count_rx);
+    Serial.print("]: ");
+    printByteAsBinary(byte_recebido);
+    Serial.println();
+    
+    count_rx++;
+  }
+  
+  Serial.println("===========================================================\n");
+  
+  delay(500); 
 }
