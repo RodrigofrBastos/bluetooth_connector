@@ -1,144 +1,130 @@
 #include <msp430.h>
+#include <stdint.h>
+#include <math.h> // Necessário para sin, cos, sqrt
 #include "serial_comm.h"
 
-// Variável global de estado
-state_t current_state = STATE_IDLE;
+// --- DEFINIÇÕES DO ÁUDIO ---
+// Ajuste conforme a taxa de amostragem real do seu áudio enviado pelo ESP32
+#define SAMPLE_RATE 44100.0
+#define CUTOFF_FREQ 2000.0   // Frequência de corte (Low Pass)
 
-// Buffer temporário para processamento
-uint8_t process_buffer[PACKET_SIZE];
-uint8_t process_index = 0;
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
-// Flag volátil para comunicação entre a Interrupção do Botão e a Main
-volatile uint8_t flag_botao_pressionado = 0;
+// --- ESTRUTURA DO FILTRO ---
+typedef struct {
+    float a0, a1, a2;
+    float b1, b2;
+    float x1, x2;  // Histórico de Entrada
+    float y1, y2;  // Histórico de Saída
+} ButterworthFilter;
 
-/**
- * Configura o Botão S2 (P1.3) do Launchpad com Interrupção
- */
-void setup_button(void) {
-    P1DIR &= ~BIT3;  // P1.3 como Entrada
-    P1REN |= BIT3;   // Habilita Resistor interno
-    P1OUT |= BIT3;   // Configura como Pull-UP (O botão aterra o pino)
+// Variável Global do Filtro
+ButterworthFilter myFilter;
+
+// --- INICIALIZAÇÃO DO FILTRO (Roda 1 vez) ---
+void init_lowpass_filter(ButterworthFilter* filter, float cutoff_freq, float sample_rate) {
+    float omega = 2.0f * M_PI * cutoff_freq / sample_rate;
+    float sn = sinf(omega);
+    float cs = cosf(omega);
+    float alpha = sn / (2.0f * 0.7071f); // Q = 0.7071 para Butterworth
     
-    P1IES |= BIT3;   // Interrupção na Borda de Descida (High -> Low)
-    P1IFG &= ~BIT3;  // Limpa flag de interrupção anterior
-    P1IE  |= BIT3;   // Habilita interrupção para P1.3
+    float a0_norm = 1.0f + alpha;
+    
+    // Coeficientes Brutos
+    float b0 = (1.0f - cs) / 2.0f;
+    float b1 = 1.0f - cs;
+    float b2 = (1.0f - cs) / 2.0f;
+    float a1 = -2.0f * cs;
+    float a2 = 1.0f - alpha;
+    
+    // Normalização (Pré-calculada para economizar tempo no loop)
+    filter->a0 = b0 / a0_norm;
+    filter->a1 = b1 / a0_norm;
+    filter->a2 = b2 / a0_norm;
+    filter->b1 = a1 / a0_norm;
+    filter->b2 = a2 / a0_norm;
+    
+    // Zera histórico
+    filter->x1 = 0.0f;
+    filter->x2 = 0.0f;
+    filter->y1 = 0.0f;
+    filter->y2 = 0.0f;
+}
+
+// --- APLICAÇÃO DO FILTRO (Roda a cada byte) ---
+float apply_filter_step(ButterworthFilter* filter, float input) {
+    // Fórmula Diferença: y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+    // Nota: Os sinais de a1 e a2 dependem da convenção da fórmula. 
+    // Usando a lógica do seu código original:
+    
+    float output = filter->a0 * input + 
+                   filter->a1 * filter->x1 + 
+                   filter->a2 * filter->x2 - 
+                   filter->b1 * filter->y1 - 
+                   filter->b2 * filter->y2;
+    
+    // Atualiza histórico (Shift)
+    filter->x2 = filter->x1;
+    filter->x1 = input;
+    
+    filter->y2 = filter->y1;
+    filter->y1 = output;
+    
+    return output;
 }
 
 int main(void) {
     WDTCTL = WDTPW | WDTHOLD;   // Stop Watchdog
 
-    uart_init();     // Inicia Serial (16MHz, 115200, 8E1)
-    setup_button();  // Inicia Botão com Interrupção
+    // Inicia UART e Clock (Certifique-se que serial_comm.c está configurado para 16MHz)
+    uart_init();     
 
-    // Configura LEDs: P1.0 (Vermelho) e P1.6 (Verde)
-    P1DIR |= BIT0 + BIT6;
-    P1OUT &= ~(BIT0 + BIT6);
+    // LED Verde (P1.6) para indicar processamento
+    P1DIR |= BIT6;
+    P1OUT &= ~BIT6;
+    
+    // LED Vermelho (P1.0) apenas para indicar energia
+    P1DIR |= BIT0;
+    P1OUT |= BIT0;
 
-    // Habilita interrupções globais (GIE) - Essencial para UART e Botão
-    __bis_SR_register(GIE);
+    // Inicializa os coeficientes do filtro
+    // Isso usa sin/cos e é lento, mas só roda uma vez no boot
+    init_lowpass_filter(&myFilter, CUTOFF_FREQ, SAMPLE_RATE);
 
+    __bis_SR_register(GIE); // Habilita interrupções
+
+    uint8_t raw_byte;
+    float input_float;
+    float output_float;
+    uint8_t filtered_byte;
+
+    // --- LOOP PRINCIPAL ---
     while(1) {
-
-        switch (current_state) {
-            
-            case STATE_IDLE:
-                P1OUT &= ~BIT0; // LED Vermelho OFF
-                
-                // Se chegou dado, começa a receber
-                if (uart_available() > 0) {
-                    current_state = STATE_RECEIVING;
-                    process_index = 0;
-                    
-                    // Opcional: Resetar o botão ao iniciar novo ciclo 
-                    // para exigir um novo clique para cada pacote
-                    flag_botao_pressionado = 0; 
-                }
-                break;
-
-            // ---------------------------------------------------------
-            // ESTADO 2: RECEIVING (Modificado)
-            // Agora espera duas condições: Buffer Cheio AND Botão Apertado
-            // ---------------------------------------------------------
-            case STATE_RECEIVING:
-                P1OUT |= BIT0; // LED Vermelho ON (Ocupado recebendo/esperando)
-
-                // 1. Enche o buffer enquanto houver dados na UART
-                while (uart_available() > 0 && process_index < PACKET_SIZE) {
-                    uint8_t byte_temp;
-                    if (uart_read_char(&byte_temp)) {
-                        process_buffer[process_index++] = byte_temp;
-                    }
-                }
-
-                // 2. Lógica de Transição MODIFICADA
-                // Só avança SE o pacote estiver completo E o botão foi pressionado
-                if (process_index >= PACKET_SIZE) {
-                    
-                    if (flag_botao_pressionado == 1) {
-                        // Condições satisfeitas!
-                        flag_botao_pressionado = 0; // Limpa a flag para a próxima vez
-                        current_state = STATE_PROCESSING;
-                    } 
-                    else {
-                        // Pacote está cheio, mas o usuário não apertou o botão.
-                        // O código fica preso aqui (loopando no while(1) da main)
-                        // aguardando a interrupção do botão acontecer.
-                        // (O LED Vermelho continua aceso indicando "Pronto, aguardando você")
-                    }
-                }
-                break;
-
-            case STATE_PROCESSING:
-                P1OUT |= BIT6; // LED Verde ON
-                
-                // Simula processamento
-                __delay_cycles(16000); // Delay maior para ser visível (1ms @ 16MHz)
-
-                current_state = STATE_SENDING;
-                break;
-
-            case STATE_SENDING:
-                {
-                    int i;
-                    for (i = 0; i < PACKET_SIZE; i++) {
-                        uart_send_char(process_buffer[i]);
-                    }
-                }
-                current_state = STATE_SENT;
-                break;
-
-            case STATE_SENT:
-                P1OUT &= ~BIT6; // LED Verde OFF
-                process_index = 0;
-                current_state = STATE_IDLE;
-                break;
-        }
-    }
-}
-
-/**
- * ISR da PORTA 1 (Onde o botão P1.3 está)
- */
-#if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
-#pragma vector=PORT1_VECTOR
-__interrupt void Port_1(void)
-#elif defined(__GNUC__)
-void __attribute__ ((interrupt(PORT1_VECTOR))) Port_1 (void)
-#else
-#error Compiler not supported!
-#endif
-{
-    // Verifica se foi o P1.3 que causou a interrupção
-    if (P1IFG & BIT3) {
         
-        // Simples Debounce (Delay curto)
-        __delay_cycles(5000); 
+        // Verifica se chegou dado do ESP32
+        if (uart_read_char(&raw_byte)) {
+            P1OUT |= BIT6; // Liga LED (Inicio processamento)
 
-        // Verifica se o botão ainda está pressionado (Low)
-        if ((P1IN & BIT3) == 0) {
-            flag_botao_pressionado = 1; // LEVANTA A FLAG
+            // 1. Converter uint8 (0-255) para float (-1.0 a 1.0)
+            // (raw - 128) / 128.0
+            input_float = ((float)raw_byte - 128.0f) * 0.0078125f; // Multiplicar é mais rápido que dividir
+            
+            // 2. Aplicar Filtro Butterworth
+            output_float = apply_filter_step(&myFilter, input_float);
+            
+            // 3. Clamp (Segurança contra distorção numérica)
+            if (output_float > 1.0f) output_float = 1.0f;
+            if (output_float < -1.0f) output_float = -1.0f;
+            
+            // 4. Converter float de volta para uint8 (0-255)
+            filtered_byte = (uint8_t)((output_float * 128.0f) + 128.0f);
+            
+            // 5. Envia de volta para o ESP32 (Echo filtrado)
+            uart_send_char(filtered_byte);
+            
+            P1OUT &= ~BIT6; // Desliga LED
         }
-
-        P1IFG &= ~BIT3; // Limpa a flag de interrupção do hardware
     }
 }

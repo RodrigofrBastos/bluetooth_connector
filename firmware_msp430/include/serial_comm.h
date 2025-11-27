@@ -5,24 +5,20 @@
 #include <stdint.h>
 
 // --- Configurações ---
-#define RX_BUFFER_SIZE 128      // Tamanho do buffer circular
-#define PACKET_SIZE    12       // Tamanho do pacote para disparar o processamento (ex: 12 bytes do seu teste)
+// Mantemos 128 bytes. Potência de 2 facilita o cálculo de "wrap around"
+#define RX_BUFFER_SIZE 128      
 
-// --- Definição da Máquina de Estados ---
-typedef enum {
-    STATE_IDLE,
-    STATE_RECEIVING,
-    STATE_PROCESSING,
-    STATE_SENDING,
-    STATE_SENT
-} state_t;
-
-// --- Declaração de Variáveis Globais ---
-// Usamos 'extern' para que a main possa ver estas funções/variáveis
+// --- Declaração de Funções Públicas ---
 void uart_init(void);
-void uart_send_char(char c);
-uint8_t uart_available(void);
+
+// Envia um byte (bloqueante se TX estiver ocupado)
+void uart_send_char(uint8_t c);
+
+// Retorna quantos bytes estão esperando no buffer
+uint16_t uart_available(void);
+
+// Tenta ler 1 byte. Retorna 1 se leu com sucesso, 0 se buffer vazio.
+// O byte lido é salvo no ponteiro *data
 int uart_read_char(uint8_t *data);
-void uart_flush(void); // Função para limpar buffer se necessário
 
 #endif

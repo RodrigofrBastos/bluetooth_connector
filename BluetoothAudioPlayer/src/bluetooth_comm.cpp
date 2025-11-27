@@ -1,38 +1,49 @@
-#include "bluetooth_comm.h" // Inclui o "menu"
+#include "bluetooth_comm.h"
 #include <Arduino.h>
 #include "BluetoothA2DPSource.h"
-// #include "audio_data.h"       // Inclui os dados do áudio
-#include "test_data.h"       // Inclui os dados de teste
+#include "test_data.h" 
 
-// --- Variáveis Globais Privadas deste Módulo ---
 BluetoothA2DPSource a2dp_source;
 const char* NOME_DO_FONE = "QCY H3"; 
-volatile int posicao_audio = 0;
 
-// --- Callbacks Internos (Não precisam estar no .h) ---
+volatile int posicao_audio = 0;
+volatile bool g_is_playing = false; 
+
+// Ponteiros dinâmicos (iniciam apontando para nada ou teste)
+const uint8_t* current_audio_data = test_data;
+int current_audio_len = test_data_len;
 
 void connection_state_changed(esp_a2d_connection_state_t state, void *ptr){
-  Serial.print("[Bluetooth] Estado mudou para: ");
-  if (state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
-      Serial.println("Desconectado ❌");
-  } else if (state == ESP_A2D_CONNECTION_STATE_CONNECTING) {
-      Serial.println("Conectando... ⏳");
-  } else if (state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
-      Serial.println("CONECTADO! ✅ Tocando áudio...");
-  } else if (state == ESP_A2D_CONNECTION_STATE_DISCONNECTING) {
-      Serial.println("Desconectando...");
+  if (state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+      Serial.println("[BT] Conectado! (Aguardando comando de play...)");
+  } else if (state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
+      Serial.println("[BT] Desconectado.");
   }
 }
 
+// O CORAÇÃO DO SISTEMA
 int32_t get_sound_data(Frame *data, int32_t len) {
     int frames_para_copiar = len;
     
     for (int i = 0; i < frames_para_copiar; i++) {
-        if (posicao_audio >= test_data_len) { 
-            posicao_audio = 0; 
+        // MODO ESPERA: Se não foi mandado tocar, envia silêncio
+        if (!g_is_playing) {
+            data[i].channel1 = 0;
+            data[i].channel2 = 0;
+            continue; 
         }
 
-        uint8_t sample_8bit = test_data[posicao_audio];
+        // MODO FIM: Se o áudio acabou, desliga o play e envia silêncio
+        if (posicao_audio >= current_audio_len) { 
+            posicao_audio = 0; 
+            g_is_playing = false; // Desliga automaticamente
+            data[i].channel1 = 0;
+            data[i].channel2 = 0;
+            continue;
+        }
+
+        // MODO TOCANDO: Envia o áudio escolhido
+        uint8_t sample_8bit = current_audio_data[posicao_audio];
         int16_t sample_16bit = (sample_8bit - 128) * 256;
         
         data[i].channel1 = sample_16bit;
@@ -43,43 +54,30 @@ int32_t get_sound_data(Frame *data, int32_t len) {
     return len;
 }
 
-
-// --- Funções Públicas (Definidas no .h) ---
+// --- Implementação da Função Unificada ---
+void playBuffer(const uint8_t* data, int len) {
+    // 1. Aponta para o novo áudio
+    current_audio_data = data;
+    current_audio_len = len;
+    
+    // 2. Reseta a posição do cursor
+    posicao_audio = 0;
+    
+    // 3. Levanta a bandeira para o get_sound_data começar a enviar som real
+    g_is_playing = true;
+    
+    Serial.printf("[BT] ▶️ Iniciando reprodução (%d bytes)\n", len);
+}
 
 void setupBluetooth() {
-  Serial.printf("Tamanho do áudio na memória: %d bytes\n", test_data_len);
-  Serial.printf("Procurando dispositivo: %s\n", NOME_DO_FONE);
-
-  // Configura o callback de status
   a2dp_source.set_on_connection_state_changed(connection_state_changed);
-
-  // Inicia o Bluetooth
   a2dp_source.start(NOME_DO_FONE, get_sound_data); 
-  
-  // Volume
-  a2dp_source.set_volume(20); 
+  a2dp_source.set_volume(30); 
 }
 
-void loopBluetooth() {
-  // Lógica para mostrar o progresso sem travar o áudio
-  // (Este era o código comentado no seu loop original)
-  static unsigned long ultima_atualizacao = 0;
-  
-  if (millis() - ultima_atualizacao > 1000) {
-      ultima_atualizacao = millis();
-      
-      if (a2dp_source.is_connected()) {
-          // Calcula a porcentagem
-          int porcentagem = (posicao_audio * 100) / test_data_len;
-          
-          Serial.printf("[Tocando] Progresso: %d%% (Byte %d de %d)\n", 
-                        porcentagem, posicao_audio, test_data_len);
-          
-          if (porcentagem < 2) { // Ajuste o 2% se o buffer for grande
-              Serial.println(">>> Início da Faixa / Loop <<<");
-          }
-      } else {
-          Serial.println("[Status] Aguardando conexão Bluetooth...");
-      }
-  }
-}
+void loopBluetooth() {}
+
+bool isAudioPlaying() { return g_is_playing; }
+bool isBluetoothConnected() { return a2dp_source.is_connected(); }
+int getTestDataLen() { return test_data_len; }
+const uint8_t* getTestData() { return test_data; }

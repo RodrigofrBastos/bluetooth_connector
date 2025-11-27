@@ -1,12 +1,24 @@
-#pragma once
+#ifndef BLUETOOTH_COMM_H
+#define BLUETOOTH_COMM_H
 
-/**
- * @brief Configura e inicia o serviço Bluetooth A2DP
- */
+#include <Arduino.h>
+
 void setupBluetooth();
-
-/**
- * @brief Tarefas de loop do Bluetooth (ex: exibir status)
- * Esta função deve ser chamada repetidamente no loop principal.
- */
 void loopBluetooth();
+
+// --- FUNÇÃO UNIFICADA DE REPRODUÇÃO ---
+// Recebe o array de áudio e o tamanho.
+// Reinicia a posição, define o buffer e ativa a flag de reprodução.
+void playBuffer(const uint8_t* data, int len);
+
+// Verifica se o áudio ainda está tocando
+bool isAudioPlaying();
+
+// Verifica se o dispositivo está conectado
+bool isBluetoothConnected();
+
+// Getters para o áudio de teste (Boot)
+int getTestDataLen();
+const uint8_t* getTestData();
+
+#endif

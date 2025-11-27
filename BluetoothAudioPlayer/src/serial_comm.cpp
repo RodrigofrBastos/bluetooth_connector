@@ -1,99 +1,128 @@
 #include <Arduino.h>
 #include "serial_comm.h"
-#include "test_data.h"
 
-// --- Pinos para a UART2 ---
 #define RXD2 16 
 #define TXD2 17 
 
-// Mantemos a função auxiliar igual, pois ela calcula a paridade DE UM BYTE
-byte calculateEvenParity(byte val) {
-  byte count = 0;
-  for (int i = 0; i < 8; i++) {
-    count ^= bitRead(val, i);
-  }
-  return count;
-}
+// Baud Rate reduzido para estabilidade
+#define SERIAL_BAUD_RATE 38400
 
-void printByteAsBinary(byte val) {
-  for (int i = 7; i >= 0; i--) {
-    Serial.print(bitRead(val, i));
-  }
-}
+uint8_t rxAudioBuffer[MAX_RX_BUFFER_SIZE];
+int rxAudioLen = 0; // Atua como cursor global de bytes JÁ confirmados
+
+// Variáveis da Transação
+const uint8_t* txDataPtr = nullptr;
+int totalBytesToProcess = 0;
+bool serialError = false;
+
+// Variáveis do Protocolo Stop-and-Wait
+bool waitingForEcho = false; // true = Enviou, esperando voltar
+int currentChunkSize = 0;    // Tamanho do pacote atual (geralmente 64, mas pode ser menos no fim)
+int chunkBytesReceived = 0;  // Quantos bytes deste pacote já voltaram
 
 void setupSerialComms() {
-  // Configuração: 8 bits de dados, Paridade Par (Even), 1 Stop Bit
-  Serial2.begin(115200, SERIAL_8E1, RXD2, TXD2);
-
-  Serial.println("--- UART Iniciada (8E1) ---");
-  Serial.println("Pinos: RX=16, TX=17");
-  Serial.println();
+  Serial2.begin(SERIAL_BAUD_RATE, SERIAL_8E1, RXD2, TXD2);
+  
+  // Buffers de hardware
+  Serial2.setRxBufferSize(2048); 
+  Serial2.setTxBufferSize(512); 
+  
+  Serial.println("--- UART Iniciada (Protocolo Stop-and-Wait) ---");
+  Serial.printf("Baud Rate: %d | Chunk Size: %d\n", SERIAL_BAUD_RATE, SERIAL_CHUNK_SIZE);
+  Serial.printf("Buffer RAM: %d bytes\n", MAX_RX_BUFFER_SIZE);
 }
 
-void loopSerialComms(bool verbose) {
-  // 1. Enviar o ARRAY COMPLETO de uma vez via Hardware
-  // O hardware vai pegar byte por byte, calcular a paridade de cada um e enviar.
-  size_t bytes_sent = Serial2.write(test_data, test_data_len);
-
-  Serial.print(">>> Pacote enviado! Total de bytes escritos: ");
-  Serial.println(bytes_sent);
-
-
-  if (verbose) {
-      Serial.println("--- DETALHAMENTO DOS FRAMES ENVIADOS (Simulação Visual) ---");
+void startSerialTransaction(const uint8_t* dataToSend, int totalLen) {
+    // Limpa qualquer lixo anterior
+    while(Serial2.available()) Serial2.read();
     
-      // 2. Loop para visualizar o que o Hardware fez com CADA byte
-      // A paridade é per-byte, então precisamos iterar o array de dados.
-      for (unsigned int i = 0; i < test_data_len; i++) {
-        byte currentByte = test_data[i];
-        byte parityBit = calculateEvenParity(currentByte);
+    txDataPtr = dataToSend;
     
-        Serial.print("Byte [");
-        Serial.print(i);
-        Serial.print("]: ");
-        printByteAsBinary(currentByte);
+    // Clamp de Memória (Segurança)
+    if (totalLen > MAX_RX_BUFFER_SIZE) {
+        totalBytesToProcess = MAX_RX_BUFFER_SIZE;
+        Serial.println("[AVISO] Audio cortado para caber na RAM.");
+    } else {
+        totalBytesToProcess = totalLen;
+    }
     
-        Serial.print(" | Paridade (E): ");
-        Serial.print(parityBit);
+    // Reseta estado
+    rxAudioLen = 0;
+    serialError = false;
     
-        // Visualização do Frame Físico
-        Serial.print("  -> Frame: [S:0] [");
-        printByteAsBinary(currentByte);
-        Serial.print("] [P:");
-        Serial.print(parityBit);
-        Serial.println("] [E:1]");
-      }
-      Serial.println("-----------------------------------------------------------");
-  }
+    // Prepara para o primeiro chunk
+    waitingForEcho = false;
+    chunkBytesReceived = 0;
+    
+    Serial.printf("[SERIAL] Iniciando. Total: %d bytes.\n", totalBytesToProcess);
+}
 
-  // 3. Recebimento dos Dados (Loop para ler múltiplos bytes)
-  Serial.println("Aguardando chegada dos dados em RX...");
-  
-  // Aguarda até que chegue pelo menos 1 byte
-  while (Serial2.available() == 0) {
-    delay(10);
-  }
+void updateSerialTransaction() {
+    if (serialError || rxAudioLen >= totalBytesToProcess) return;
 
-  // Pequeno delay para garantir que o buffer encha se os bytes estiverem chegando rápido
-  delay(100); 
+    // --- FASE 1: ENVIAR O CHUNK ---
+    if (!waitingForEcho) {
+        // Calcula quanto falta
+        int remainingBytes = totalBytesToProcess - rxAudioLen;
+        
+        // Define o tamanho deste pacote (64 ou o resto que sobrar)
+        currentChunkSize = (remainingBytes > SERIAL_CHUNK_SIZE) ? SERIAL_CHUNK_SIZE : remainingBytes;
+        
+        // Verifica se o hardware aguenta receber esses bytes
+        if (Serial2.availableForWrite() >= currentChunkSize) {
+            // Envia o bloco exato
+            Serial2.write(&txDataPtr[rxAudioLen], currentChunkSize);
+            
+            // Muda estado para ESPERA
+            waitingForEcho = true;
+            chunkBytesReceived = 0;
+            
+            // (Opcional) Debug detalhado
+            // Serial.printf("TX Chunk: %d bytes (Offset: %d)\n", currentChunkSize, rxAudioLen);
+        }
+    }
 
-  Serial.println("--- DADOS RECEBIDOS EM RX ---");
-  int count_rx = 0;
-  
-  // Enquanto houver dados no buffer de recepção...
-  while (Serial2.available() > 0) {
-    byte byte_recebido = Serial2.read();
-    
-    Serial.print("RX Byte [");
-    Serial.print(count_rx);
-    Serial.print("]: ");
-    printByteAsBinary(byte_recebido);
-    Serial.println();
-    
-    count_rx++;
-  }
-  
-  Serial.println("===========================================================\n");
-  
-  delay(500); 
+    // --- FASE 2: ESPERAR O RETORNO (ECHO) ---
+    if (waitingForEcho) {
+        // Lê tudo que chegar
+        while (Serial2.available() > 0) {
+            byte b = Serial2.read();
+            
+            // Grava no buffer global na posição correta
+            // Posição = (Tudo que já foi processado antes) + (O que chegou agora deste chunk)
+            int writePos = rxAudioLen + chunkBytesReceived;
+            
+            if (writePos < MAX_RX_BUFFER_SIZE) {
+                rxAudioBuffer[writePos] = b;
+                chunkBytesReceived++;
+            } else {
+                serialError = true; // Overflow
+            }
+
+            // Verifica se completou este chunk específico
+            if (chunkBytesReceived == currentChunkSize) {
+                // SUCESSO DO CHUNK!
+                // Atualiza o contador global
+                rxAudioLen += currentChunkSize;
+                
+                // Libera para enviar o próximo
+                waitingForEcho = false;
+                
+                // Sai do loop de leitura para dar chance de enviar no próximo ciclo
+                return; 
+            }
+        }
+    }
+}
+
+bool isTransactionComplete() {
+    return rxAudioLen >= totalBytesToProcess;
+}
+
+int getBytesProcessed() {
+    return rxAudioLen;
+}
+
+bool hasSerialError() {
+    return serialError;
 }
